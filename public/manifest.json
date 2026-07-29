@@ -1,0 +1,26 @@
+{
+  "name": "ASCEND — Training Progress",
+  "short_name": "ASCEND",
+  "description": "Log a session, watch the attribute climb, hold the streak.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#060708",
+  "theme_color": "#0B0D10",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["health", "fitness"],
+  "screenshots": []
+}
