@@ -113,7 +113,7 @@ export default async function HistoryPage() {
                   <div style={{ fontSize: 11, color: '#8A939C', marginTop: 2 }}>
                     {date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                     {durationMin && ` · ${durationMin} min`}
-                    {session.set_count && ` · ${session.set_count} sets`}
+                    {Number(session.set_count) > 0 && ` · ${session.set_count} sets`}
                   </div>
                 </div>
                 <div style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
