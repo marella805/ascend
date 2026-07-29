@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { ensureDb } from '@/lib/db/index';
 import { getQuests } from '@/lib/db/queries';
 import { ProgressRing } from '@/components/ui/ProgressRing';

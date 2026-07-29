@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { ensureDb } from '@/lib/db/index';
 import { getCharacterSheet, getPRs, getTemplateState } from '@/lib/db/queries';
 import { TEMPLATES } from '@/lib/templates';

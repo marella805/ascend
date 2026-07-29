@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { ensureDb } from '@/lib/db/index';
 import { getPRs } from '@/lib/db/queries';
 import { AppNav } from '@/components/AppNav';
