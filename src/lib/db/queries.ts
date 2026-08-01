@@ -157,9 +157,18 @@ export async function getPRs(): Promise<PR[]> {
   }));
 }
 
-// ── Last-session best set for an exercise (for progression hint) ──────────────
+// ── Last-session data for an exercise (sets, target, trend) ──────────────────
 
-export async function getLastBestSet(exerciseId: string): Promise<{ weightKg: number; reps: number; nextWeightLb: number; nextReps: number } | null> {
+export type LastSessionData = {
+  weightKg: number;
+  reps: number;
+  nextWeightLb: number;
+  nextReps: number;
+  allSets: Array<{ weightLb: number; reps: number }>;
+  trend: Array<{ date: string; weightLb: number }>;
+};
+
+export async function getLastBestSet(exerciseId: string): Promise<LastSessionData | null> {
   const client = getClient();
 
   const sessionResult = await client.execute({
@@ -170,27 +179,44 @@ export async function getLastBestSet(exerciseId: string): Promise<{ weightKg: nu
     args: [USER_ID, exerciseId],
   });
   const sessionRow: DBRow | null = sessionResult.rows[0] ?? null;
-
   if (!sessionRow) return null;
 
-  const setResult = await client.execute({
+  const setsResult = await client.execute({
     sql: `SELECT weight_kg, reps FROM session_set
           WHERE session_id = ? AND exercise_id = ? AND is_warmup = 0 AND weight_kg IS NOT NULL
-          ORDER BY weight_kg DESC LIMIT 1`,
+          ORDER BY set_index`,
     args: [String(sessionRow.id), exerciseId],
   });
-  const setRow: DBRow | null = setResult.rows[0] ?? null;
+  if (setsResult.rows.length === 0) return null;
 
-  if (!setRow || !setRow.weight_kg || !setRow.reps) return null;
-
-  const wKg = Number(setRow.weight_kg);
-  const reps = Number(setRow.reps);
+  const bestRow = setsResult.rows.reduce((a, b) =>
+    Number(a.weight_kg) >= Number(b.weight_kg) ? a : b
+  );
+  const wKg = Number(bestRow.weight_kg);
+  const reps = Number(bestRow.reps);
   const next = calcNextTarget(wKg, reps);
+
+  const trendResult = await client.execute({
+    sql: `SELECT ws.local_date, MAX(ss.weight_kg) as max_kg
+          FROM session_set ss JOIN workout_session ws ON ws.id = ss.session_id
+          WHERE ws.user_id = ? AND ss.exercise_id = ? AND ws.state = 'finished' AND ss.is_warmup = 0
+          GROUP BY ws.id ORDER BY ws.finished_at DESC LIMIT 5`,
+    args: [USER_ID, exerciseId],
+  });
+
   return {
     weightKg: wKg,
     reps,
     nextWeightLb: Math.round(next.weightKg * 2.20462 * 10) / 10,
     nextReps: next.targetReps,
+    allSets: setsResult.rows.map(r => ({
+      weightLb: Math.round(Number(r.weight_kg) * 2.20462 * 10) / 10,
+      reps: Number(r.reps),
+    })),
+    trend: [...trendResult.rows].reverse().map(r => ({
+      date: String(r.local_date),
+      weightLb: Math.round(Number(r.max_kg) * 2.20462 * 10) / 10,
+    })),
   };
 }
 

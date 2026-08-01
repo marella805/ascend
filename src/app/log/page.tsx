@@ -34,6 +34,8 @@ type LastSetHint = {
   reps: number;
   nextWeightLb: number;
   nextReps: number;
+  allSets: Array<{ weightLb: number; reps: number }>;
+  trend: Array<{ date: string; weightLb: number }>;
 } | null;
 
 function ulid(): string {
@@ -434,6 +436,13 @@ function SetLogger({
   const [isWarmup, setIsWarmup] = useState(false);
   const [adding, setAdding] = useState(false);
 
+  useEffect(() => {
+    if (lastSetHint && modality === 'strength') {
+      setWeight(prev => prev === '' ? lastSetHint.nextWeightLb.toString() : prev);
+      setReps(prev => prev === '' ? lastSetHint.nextReps.toString() : prev);
+    }
+  }, [lastSetHint]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const canAdd = modality === 'strength'
     ? (weight !== '' && reps !== '')
     : modality === 'endurance'
@@ -471,21 +480,61 @@ function SetLogger({
 
         <div className="font-oswald" style={{ fontSize: 22, marginBottom: 4 }}>{exercise.name}</div>
 
-        {/* Last session target hint */}
+        {/* Last session card */}
         {lastSetHint && previousSets.length === 0 && (
-          <div style={{
-            background: '#0F1A10', border: '1px solid #C6F13530', borderRadius: 10,
-            padding: '8px 12px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10,
-          }}>
-            <i className="ph ph-arrow-up-right" style={{ color: '#C6F135', fontSize: 16, flexShrink: 0 }} />
-            <div>
-              <div style={{ fontSize: 11, color: '#8A939C' }}>
-                Last: {kgToLb(lastSetHint.weightKg)} lb × {lastSetHint.reps}
+          <div style={{ marginBottom: 14 }}>
+            {/* All sets from last session */}
+            <div style={{ background: '#14181D', border: '1px solid #23282F', borderRadius: 12, padding: '10px 14px', marginBottom: 8 }}>
+              <div style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", marginBottom: 8 }}>LAST SESSION</div>
+              {lastSetHint.allSets.map((s, i) => {
+                const maxLb = Math.max(...lastSetHint.allSets.map(x => x.weightLb));
+                const isBest = s.weightLb === maxLb;
+                return (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, marginBottom: i < lastSetHint.allSets.length - 1 ? 5 : 0, color: isBest ? '#F2F5F7' : '#8A939C' }}>
+                    <span style={{ minWidth: 18, color: '#4A5260', fontFamily: "'Oswald',sans-serif", fontSize: 12 }}>{i + 1}</span>
+                    <span>{s.weightLb} lb × {s.reps}</span>
+                    {isBest && <span style={{ fontSize: 9, color: '#C6F135', fontFamily: "'Oswald',sans-serif", letterSpacing: '.1em' }}>BEST</span>}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Target today */}
+            <div style={{ background: '#0F1A10', border: '1px solid #C6F13530', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif" }}>TARGET (PRE-LOADED)</div>
+                <div style={{ fontSize: 16, color: '#C6F135', fontFamily: "'Oswald',sans-serif", marginTop: 3 }}>
+                  {lastSetHint.nextWeightLb} lb × {lastSetHint.nextReps}
+                </div>
               </div>
-              <div style={{ fontSize: 13, color: '#C6F135', fontFamily: "'Oswald',sans-serif" }}>
-                Target: {lastSetHint.nextWeightLb} lb × {lastSetHint.nextReps}
+              <div style={{ fontSize: 11, color: '#C6F135', textAlign: 'right' }}>
+                {lastSetHint.nextWeightLb > kgToLb(lastSetHint.weightKg)
+                  ? `+${Math.round((lastSetHint.nextWeightLb - kgToLb(lastSetHint.weightKg)) * 10) / 10} lb`
+                  : lastSetHint.nextReps > lastSetHint.reps
+                  ? `+${lastSetHint.nextReps - lastSetHint.reps} rep`
+                  : ''}
               </div>
             </div>
+
+            {/* Progression trend mini-chart */}
+            {lastSetHint.trend.length >= 2 && (() => {
+              const weights = lastSetHint.trend.map(t => t.weightLb);
+              const minW = Math.min(...weights);
+              const maxW = Math.max(...weights);
+              const range = maxW - minW;
+              return (
+                <div style={{ marginTop: 8, display: 'flex', alignItems: 'flex-end', gap: 3, height: 28 }}>
+                  {lastSetHint.trend.map((t, i) => {
+                    const h = range === 0 ? 60 : Math.round(((t.weightLb - minW) / range) * 60 + 40);
+                    const isLast = i === lastSetHint.trend.length - 1;
+                    return <div key={i} style={{ flex: 1, borderRadius: 2, background: isLast ? '#C6F135' : '#23282F', height: `${h}%` }} />;
+                  })}
+                  <div style={{ marginLeft: 6, fontSize: 9, color: '#4A5260', whiteSpace: 'nowrap', paddingBottom: 2 }}>
+                    {weights[0]} → {weights[weights.length - 1]} lb
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
