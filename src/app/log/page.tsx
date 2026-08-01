@@ -411,6 +411,13 @@ function PickModality({ onSelect }: { onSelect: (m: Modality) => void }) {
   );
 }
 
+type PendingRow = {
+  rowId: string;
+  weightStr: string;
+  repsStr: string;
+  isWarmup: boolean;
+};
+
 function SetLogger({
   exercise,
   modality,
@@ -426,242 +433,303 @@ function SetLogger({
   onAdd: (set: LogSet) => Promise<void>;
   onBack: () => void;
 }) {
-  const workingSets = previousSets.filter(s => !s.isWarmup);
-  const lastSet = workingSets[workingSets.length - 1];
+  const REST_DURATION = 90;
+  const [restSeconds, setRestSeconds] = useState<number | null>(null);
 
-  const [weight, setWeight] = useState(lastSet?.weight?.toString() ?? '');
-  const [reps, setReps] = useState(lastSet?.reps?.toString() ?? '');
+  // Pending (not yet logged) rows — separate from previousSets which is source of truth
+  const [pendingRows, setPendingRows] = useState<PendingRow[]>([
+    { rowId: ulid(), weightStr: '', repsStr: '', isWarmup: false },
+  ]);
+  // Endurance/mobility fields
   const [minutes, setMinutes] = useState('');
   const [miles, setMiles] = useState('');
-  const [isWarmup, setIsWarmup] = useState(false);
-  const [adding, setAdding] = useState(false);
 
+  // When lastSetHint arrives, pre-load target weight into all pending rows
   useEffect(() => {
-    if (lastSetHint && modality === 'strength') {
-      setWeight(prev => prev === '' ? lastSetHint.nextWeightLb.toString() : prev);
-      setReps(prev => prev === '' ? lastSetHint.nextReps.toString() : prev);
+    if (!lastSetHint || modality !== 'strength') return;
+    const targetW = lastSetHint.nextWeightLb.toString();
+    // Pre-populate the same number of rows as last session (if no sets logged yet)
+    if (previousSets.length === 0) {
+      const count = Math.max(1, lastSetHint.allSets.length);
+      setPendingRows(
+        Array.from({ length: count }, (_, i) => ({
+          rowId: `init-${i}`,
+          weightStr: targetW,
+          repsStr: '',
+          isWarmup: false,
+        }))
+      );
+    } else {
+      // Already started: just fill empty weight fields
+      setPendingRows(prev => prev.map(r => ({ ...r, weightStr: r.weightStr || targetW })));
     }
   }, [lastSetHint]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const canAdd = modality === 'strength'
-    ? (weight !== '' && reps !== '')
-    : modality === 'endurance'
-    ? (minutes !== '' || miles !== '')
-    : minutes !== '';
+  // Rest countdown
+  useEffect(() => {
+    if (restSeconds === null || restSeconds <= 0) return;
+    const t = setTimeout(() => setRestSeconds(s => s !== null ? s - 1 : null), 1000);
+    return () => clearTimeout(t);
+  }, [restSeconds]);
 
-  const handleAdd = async () => {
-    if (!canAdd || adding) return;
-    setAdding(true);
-    const setIndex = previousSets.length;
+  const updatePending = (rowId: string, field: 'weightStr' | 'repsStr', val: string) =>
+    setPendingRows(prev => prev.map(r => r.rowId === rowId ? { ...r, [field]: val } : r));
+
+  const confirmRow = async (rowId: string) => {
+    const row = pendingRows.find(r => r.rowId === rowId);
+    if (!row || !row.weightStr || !row.repsStr || Number(row.repsStr) <= 0) return;
     await onAdd({
       id: ulid(),
       exerciseId: exercise.id,
       exerciseName: exercise.name,
-      setIndex,
-      weight: weight ? Number(weight) : undefined,
-      reps: reps ? Number(reps) : undefined,
+      setIndex: previousSets.length,
+      weight: Number(row.weightStr),
+      reps: Number(row.repsStr),
+      isWarmup: row.isWarmup,
+    });
+    // Remove confirmed row; if it was the only pending row, add a fresh one
+    setPendingRows(prev => {
+      const next = prev.filter(r => r.rowId !== rowId);
+      if (next.length === 0) next.push({ rowId: ulid(), weightStr: row.weightStr, repsStr: '', isWarmup: false });
+      return next;
+    });
+    if (!row.isWarmup) setRestSeconds(REST_DURATION);
+  };
+
+  const addPendingRow = () => {
+    const last = pendingRows[pendingRows.length - 1];
+    setPendingRows(prev => [...prev, { rowId: ulid(), weightStr: last?.weightStr ?? '', repsStr: '', isWarmup: false }]);
+  };
+
+  // Non-strength quick log
+  const canAddSimple = modality === 'endurance' ? (minutes !== '' || miles !== '') : minutes !== '';
+  const handleSimpleAdd = async () => {
+    await onAdd({
+      id: ulid(), exerciseId: exercise.id, exerciseName: exercise.name,
+      setIndex: previousSets.length,
       durationS: minutes ? Number(minutes) * 60 : undefined,
       distanceM: miles ? Number(miles) : undefined,
-      isWarmup,
+      isWarmup: false,
     });
-    setAdding(false);
-    if (modality === 'strength') {
-      setReps('');
-    }
+    setMinutes(''); setMiles('');
   };
+
+  const volume = previousSets.filter(s => !s.isWarmup).reduce((sum, s) => sum + (s.weight || 0) * (s.reps || 0), 0);
+  const restMin = Math.floor((restSeconds ?? 0) / 60);
+  const restSec = String((restSeconds ?? 0) % 60).padStart(2, '0');
 
   return (
     <main style={{ maxWidth: 430, margin: '0 auto', minHeight: '100dvh', background: '#0B0D10', fontFamily: "'Inter',sans-serif", color: '#F2F5F7' }}>
-      <div style={{ padding: '16px 24px 120px' }}>
+
+      {/* ── Sticky rest timer banner ─────────────────────────────────────────── */}
+      {restSeconds !== null && restSeconds > 0 && (
+        <div style={{
+          position: 'sticky', top: 0, zIndex: 20,
+          background: '#111810', borderBottom: '1px solid #C6F13530',
+          padding: '10px 20px', display: 'flex', alignItems: 'center', gap: 12,
+        }}>
+          <i className="ph ph-timer" style={{ color: '#C6F135', fontSize: 18, flexShrink: 0 }} />
+          <span style={{ fontSize: 10, letterSpacing: '.16em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", flexShrink: 0 }}>REST</span>
+          <span className="font-oswald" style={{ fontSize: 24, color: restSeconds <= 15 ? '#FF5A3C' : '#C6F135', minWidth: 56 }}>
+            {restMin}:{restSec}
+          </span>
+          <div style={{ flex: 1, height: 4, background: '#23282F', borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{
+              height: '100%', borderRadius: 2,
+              width: `${(restSeconds / REST_DURATION) * 100}%`,
+              background: restSeconds <= 15 ? '#FF5A3C' : '#C6F135',
+              transition: 'width 1s linear, background 0.3s',
+            }} />
+          </div>
+          <button onClick={() => setRestSeconds(null)} style={{ fontSize: 11, color: '#4A5260', fontFamily: "'Oswald',sans-serif", letterSpacing: '.1em', flexShrink: 0 }}>SKIP</button>
+        </div>
+      )}
+
+      <div style={{ padding: '14px 20px 120px' }}>
+
+        {/* Back */}
         <button onClick={onBack} style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#8A939C', marginBottom: 16 }}>
           <i className="ph ph-caret-left" style={{ fontSize: 18 }} />
-          <span style={{ fontSize: 13 }}>Back to exercises</span>
+          <span style={{ fontSize: 13 }}>exercises</span>
         </button>
 
-        <div className="font-oswald" style={{ fontSize: 22, marginBottom: 4 }}>{exercise.name}</div>
-
-        {/* Last session card */}
-        {lastSetHint && previousSets.length === 0 && (
-          <div style={{ marginBottom: 14 }}>
-            {/* All sets from last session */}
-            <div style={{ background: '#14181D', border: '1px solid #23282F', borderRadius: 12, padding: '10px 14px', marginBottom: 8 }}>
-              <div style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", marginBottom: 8 }}>LAST SESSION</div>
-              {lastSetHint.allSets.map((s, i) => {
-                const maxLb = Math.max(...lastSetHint.allSets.map(x => x.weightLb));
-                const isBest = s.weightLb === maxLb;
+        {/* Exercise header card */}
+        <div style={{ background: '#14181D', border: '1px solid #23282F', borderRadius: 16, padding: '14px 16px', marginBottom: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <div className="font-oswald" style={{ fontSize: 22, lineHeight: 1.1 }}>{exercise.name}</div>
+            {Boolean(exercise.is_compound) && (
+              <div style={{ background: '#FF5A3C14', border: '1px solid #FF5A3C28', borderRadius: 8, padding: '3px 9px', flexShrink: 0 }}>
+                <span style={{ fontSize: 9, color: '#FF5A3C', fontFamily: "'Oswald',sans-serif", letterSpacing: '.12em' }}>COMPOUND</span>
+              </div>
+            )}
+          </div>
+          {volume > 0 ? (
+            <div style={{ marginTop: 6, fontSize: 11, color: '#8A939C' }}>
+              {previousSets.filter(s => !s.isWarmup).length} sets · {Math.round(volume).toLocaleString()} lb
+            </div>
+          ) : lastSetHint ? (
+            <div style={{ marginTop: 6, display: 'flex', gap: 10, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#4A5260' }}>Last: {kgToLb(lastSetHint.weightKg)} lb × {lastSetHint.reps}</span>
+              <span style={{ fontSize: 9, color: '#4A5260' }}>·</span>
+              {lastSetHint.trend.length >= 2 && (() => {
+                const ws = lastSetHint.trend.map(t => t.weightLb);
+                const minW = Math.min(...ws); const maxW = Math.max(...ws); const range = maxW - minW;
                 return (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, marginBottom: i < lastSetHint.allSets.length - 1 ? 5 : 0, color: isBest ? '#F2F5F7' : '#8A939C' }}>
-                    <span style={{ minWidth: 18, color: '#4A5260', fontFamily: "'Oswald',sans-serif", fontSize: 12 }}>{i + 1}</span>
-                    <span>{s.weightLb} lb × {s.reps}</span>
-                    {isBest && <span style={{ fontSize: 9, color: '#C6F135', fontFamily: "'Oswald',sans-serif", letterSpacing: '.1em' }}>BEST</span>}
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 14 }}>
+                    {lastSetHint.trend.map((t, i) => {
+                      const h = range === 0 ? 60 : Math.round(((t.weightLb - minW) / range) * 60 + 40);
+                      return <div key={i} style={{ width: 5, borderRadius: 1, background: i === lastSetHint.trend.length - 1 ? '#C6F135' : '#2D3540', height: `${h}%` }} />;
+                    })}
                   </div>
                 );
-              })}
+              })()}
+              <span style={{ fontSize: 11, color: '#C6F135', marginLeft: 2 }}>→ {lastSetHint.nextWeightLb} lb</span>
+            </div>
+          ) : null}
+        </div>
+
+        {/* ── Strength: sets table ─────────────────────────────────────────────── */}
+        {modality === 'strength' && (
+          <div style={{ background: '#14181D', border: '1px solid #23282F', borderRadius: 16, overflow: 'hidden', marginBottom: 14 }}>
+            {/* Column headers */}
+            <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 1fr 1fr 44px', padding: '8px 14px', borderBottom: '1px solid #1A1F26' }}>
+              {['SET', 'PREV', 'LBS', 'REPS', ''].map((h, i) => (
+                <div key={i} style={{ fontSize: 9, letterSpacing: '.14em', color: '#4A5260', fontFamily: "'Oswald',sans-serif", textAlign: i >= 2 ? 'center' : 'left' }}>{h}</div>
+              ))}
             </div>
 
-            {/* Target today */}
-            <div style={{ background: '#0F1A10', border: '1px solid #C6F13530', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif" }}>TARGET (PRE-LOADED)</div>
-                <div style={{ fontSize: 16, color: '#C6F135', fontFamily: "'Oswald',sans-serif", marginTop: 3 }}>
-                  {lastSetHint.nextWeightLb} lb × {lastSetHint.nextReps}
-                </div>
-              </div>
-              <div style={{ fontSize: 11, color: '#C6F135', textAlign: 'right' }}>
-                {lastSetHint.nextWeightLb > kgToLb(lastSetHint.weightKg)
-                  ? `+${Math.round((lastSetHint.nextWeightLb - kgToLb(lastSetHint.weightKg)) * 10) / 10} lb`
-                  : lastSetHint.nextReps > lastSetHint.reps
-                  ? `+${lastSetHint.nextReps - lastSetHint.reps} rep`
-                  : ''}
-              </div>
-            </div>
+            {/* Confirmed rows (source of truth: previousSets) */}
+            {(() => {
+              let wi = 0;
+              return previousSets.map((s, i) => {
+                if (!s.isWarmup) wi++;
+                const prev = lastSetHint?.allSets[i];
+                return (
+                  <div key={s.id} style={{
+                    display: 'grid', gridTemplateColumns: '32px 1fr 1fr 1fr 44px',
+                    padding: '11px 14px', alignItems: 'center',
+                    background: s.isWarmup ? 'transparent' : '#0D1A0D',
+                    borderBottom: '1px solid #1A1F26',
+                  }}>
+                    <div style={{ fontFamily: "'Oswald',sans-serif", fontSize: 13, color: s.isWarmup ? '#4A5260' : '#C6F135' }}>{s.isWarmup ? 'W' : wi}</div>
+                    <div style={{ fontSize: 11, color: '#4A5260' }}>{prev ? `${prev.weightLb}×${prev.reps}` : '—'}</div>
+                    <div style={{ fontFamily: "'Oswald',sans-serif", fontSize: 17, color: '#F2F5F7', textAlign: 'center' }}>{s.weight}</div>
+                    <div style={{ fontFamily: "'Oswald',sans-serif", fontSize: 17, color: '#F2F5F7', textAlign: 'center' }}>{s.reps}</div>
+                    <div style={{ display: 'flex', justifyContent: 'center' }}>
+                      <div style={{ width: 28, height: 28, borderRadius: '50%', background: s.isWarmup ? '#23282F' : '#C6F135', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <i className="ph-bold ph-check" style={{ fontSize: 13, color: s.isWarmup ? '#4A5260' : '#0B0D10' }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              });
+            })()}
 
-            {/* Progression trend mini-chart */}
-            {lastSetHint.trend.length >= 2 && (() => {
-              const weights = lastSetHint.trend.map(t => t.weightLb);
-              const minW = Math.min(...weights);
-              const maxW = Math.max(...weights);
-              const range = maxW - minW;
+            {/* Pending rows (editable) */}
+            {pendingRows.map((row, i) => {
+              const posIdx = previousSets.length + i;
+              const prev = lastSetHint?.allSets[posIdx];
+              const prevWi = previousSets.filter(s => !s.isWarmup).length;
+              const wi = row.isWarmup ? 'W' : prevWi + pendingRows.slice(0, i + 1).filter(r => !r.isWarmup).length;
+              const ready = row.weightStr !== '' && row.repsStr !== '' && Number(row.repsStr) > 0;
               return (
-                <div style={{ marginTop: 8, display: 'flex', alignItems: 'flex-end', gap: 3, height: 28 }}>
-                  {lastSetHint.trend.map((t, i) => {
-                    const h = range === 0 ? 60 : Math.round(((t.weightLb - minW) / range) * 60 + 40);
-                    const isLast = i === lastSetHint.trend.length - 1;
-                    return <div key={i} style={{ flex: 1, borderRadius: 2, background: isLast ? '#C6F135' : '#23282F', height: `${h}%` }} />;
-                  })}
-                  <div style={{ marginLeft: 6, fontSize: 9, color: '#4A5260', whiteSpace: 'nowrap', paddingBottom: 2 }}>
-                    {weights[0]} → {weights[weights.length - 1]} lb
+                <div key={row.rowId} style={{
+                  display: 'grid', gridTemplateColumns: '32px 1fr 1fr 1fr 44px',
+                  padding: '8px 14px', alignItems: 'center',
+                  borderBottom: i < pendingRows.length - 1 ? '1px solid #1A1F26' : 'none',
+                }}>
+                  <button
+                    onClick={() => setPendingRows(prev => prev.map(r => r.rowId === row.rowId ? { ...r, isWarmup: !r.isWarmup } : r))}
+                    style={{ fontFamily: "'Oswald',sans-serif", fontSize: 13, color: '#4A5260', textAlign: 'left' }}
+                  >{wi}</button>
+                  <div style={{ fontSize: 11, color: '#4A5260' }}>{prev ? `${prev.weightLb}×${prev.reps}` : '—'}</div>
+                  <input
+                    type="number" inputMode="decimal" placeholder="—"
+                    value={row.weightStr}
+                    onChange={e => updatePending(row.rowId, 'weightStr', e.target.value)}
+                    style={{
+                      background: 'transparent', border: 'none', outline: 'none',
+                      color: '#F2F5F7', fontSize: 18, fontFamily: "'Oswald',sans-serif",
+                      textAlign: 'center', width: '100%',
+                    }}
+                  />
+                  <input
+                    type="number" inputMode="numeric" placeholder="—"
+                    value={row.repsStr}
+                    onChange={e => updatePending(row.rowId, 'repsStr', e.target.value)}
+                    style={{
+                      background: 'transparent', border: 'none', outline: 'none',
+                      color: '#F2F5F7', fontSize: 18, fontFamily: "'Oswald',sans-serif",
+                      textAlign: 'center', width: '100%',
+                    }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <button
+                      onClick={() => confirmRow(row.rowId)}
+                      disabled={!ready}
+                      style={{
+                        width: 28, height: 28, borderRadius: '50%',
+                        background: ready ? '#C6F135' : 'transparent',
+                        border: `1.5px solid ${ready ? '#C6F135' : '#2D3540'}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      <i className="ph-bold ph-check" style={{ fontSize: 13, color: ready ? '#0B0D10' : '#2D3540' }} />
+                    </button>
                   </div>
                 </div>
               );
-            })()}
+            })}
+
+            {/* Add set row */}
+            <button
+              onClick={addPendingRow}
+              style={{
+                width: '100%', padding: '12px', borderTop: '1px solid #1A1F26',
+                color: '#8A939C', fontFamily: "'Oswald',sans-serif", fontSize: 13,
+                letterSpacing: '.1em', background: 'transparent', textAlign: 'center',
+              }}
+            >+ ADD SET</button>
           </div>
         )}
 
-        <div style={{ fontSize: 11, color: '#8A939C', marginBottom: 20 }}>
-          {previousSets.length} set{previousSets.length !== 1 ? 's' : ''} logged this session
-        </div>
-
-        {previousSets.length > 0 && (
-          <div style={{ marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {previousSets.map((s, i) => (
-              <div key={s.id} style={{ display: 'flex', gap: 10, fontSize: 13, color: s.isWarmup ? '#4A5260' : '#F2F5F7' }}>
-                <span style={{ minWidth: 20, color: s.isWarmup ? '#4A5260' : '#C6F135' }}>
-                  {s.isWarmup ? 'W' : `${i + 1}`}
-                </span>
-                {s.weight && s.reps && <span>{s.weight} lb × {s.reps}</span>}
-                {s.durationS && <span>{Math.round(s.durationS / 60)} min</span>}
-                {s.distanceM && <span>{s.distanceM} mi</span>}
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div style={{ background: '#14181D', border: '1px solid #23282F', borderRadius: 16, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {modality === 'strength' && (
-            <>
+        {/* ── Endurance / mobility: simple form ───────────────────────────────── */}
+        {modality !== 'strength' && (
+          <div style={{ background: '#14181D', border: '1px solid #23282F', borderRadius: 16, padding: '18px 16px', display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 14 }}>
+            {modality === 'endurance' && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div>
-                  <label style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", display: 'block', marginBottom: 6 }}>
-                    WEIGHT (lb)
-                  </label>
-                  <input
-                    type="number" inputMode="decimal" placeholder="0"
-                    value={weight} onChange={e => setWeight(e.target.value)}
-                    style={{
-                      width: '100%', background: '#0B0D10', border: '1px solid #2D3540', borderRadius: 8,
-                      padding: '12px 12px', color: '#F2F5F7', fontSize: 20, fontFamily: "'Oswald',sans-serif",
-                    }}
-                  />
+                  <label style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", display: 'block', marginBottom: 6 }}>DURATION (min)</label>
+                  <input type="number" inputMode="decimal" placeholder="30" value={minutes} onChange={e => setMinutes(e.target.value)}
+                    style={{ width: '100%', background: '#0B0D10', border: '1px solid #2D3540', borderRadius: 8, padding: '12px', color: '#F2F5F7', fontSize: 20, fontFamily: "'Oswald',sans-serif" }} />
                 </div>
                 <div>
-                  <label style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", display: 'block', marginBottom: 6 }}>
-                    REPS
-                  </label>
-                  <input
-                    type="number" inputMode="numeric" placeholder="0"
-                    value={reps} onChange={e => setReps(e.target.value)}
-                    style={{
-                      width: '100%', background: '#0B0D10', border: '1px solid #2D3540', borderRadius: 8,
-                      padding: '12px 12px', color: '#F2F5F7', fontSize: 20, fontFamily: "'Oswald',sans-serif",
-                    }}
-                  />
+                  <label style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", display: 'block', marginBottom: 6 }}>DISTANCE (mi)</label>
+                  <input type="number" inputMode="decimal" placeholder="3.1" value={miles} onChange={e => setMiles(e.target.value)}
+                    style={{ width: '100%', background: '#0B0D10', border: '1px solid #2D3540', borderRadius: 8, padding: '12px', color: '#F2F5F7', fontSize: 20, fontFamily: "'Oswald',sans-serif" }} />
                 </div>
               </div>
-              <button
-                onClick={() => setIsWarmup(v => !v)}
-                style={{
-                  background: isWarmup ? '#23282F' : 'transparent', border: '1px solid #23282F',
-                  borderRadius: 8, padding: '8px 14px', color: isWarmup ? '#F2F5F7' : '#4A5260',
-                  fontSize: 12, fontFamily: "'Oswald',sans-serif", letterSpacing: '.1em',
-                  alignSelf: 'flex-start',
-                }}
-              >
-                {isWarmup ? '✓ WARM-UP' : 'MARK AS WARM-UP'}
-              </button>
-            </>
-          )}
-
-          {modality === 'endurance' && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            )}
+            {modality === 'mobility' && (
               <div>
-                <label style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", display: 'block', marginBottom: 6 }}>
-                  DURATION (min)
-                </label>
-                <input
-                  type="number" inputMode="decimal" placeholder="30"
-                  value={minutes} onChange={e => setMinutes(e.target.value)}
-                  style={{
-                    width: '100%', background: '#0B0D10', border: '1px solid #2D3540', borderRadius: 8,
-                    padding: '12px 12px', color: '#F2F5F7', fontSize: 20, fontFamily: "'Oswald',sans-serif",
-                  }}
-                />
+                <label style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", display: 'block', marginBottom: 6 }}>DURATION (min)</label>
+                <input type="number" inputMode="decimal" placeholder="30" value={minutes} onChange={e => setMinutes(e.target.value)}
+                  style={{ width: '100%', background: '#0B0D10', border: '1px solid #2D3540', borderRadius: 8, padding: '12px', color: '#F2F5F7', fontSize: 20, fontFamily: "'Oswald',sans-serif" }} />
               </div>
-              <div>
-                <label style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", display: 'block', marginBottom: 6 }}>
-                  DISTANCE (mi)
-                </label>
-                <input
-                  type="number" inputMode="decimal" placeholder="3.1"
-                  value={miles} onChange={e => setMiles(e.target.value)}
-                  style={{
-                    width: '100%', background: '#0B0D10', border: '1px solid #2D3540', borderRadius: 8,
-                    padding: '12px 12px', color: '#F2F5F7', fontSize: 20, fontFamily: "'Oswald',sans-serif",
-                  }}
-                />
-              </div>
-            </div>
-          )}
-
-          {modality === 'mobility' && (
-            <div>
-              <label style={{ fontSize: 10, letterSpacing: '.14em', color: '#8A939C', fontFamily: "'Oswald',sans-serif", display: 'block', marginBottom: 6 }}>
-                DURATION (min)
-              </label>
-              <input
-                type="number" inputMode="decimal" placeholder="30"
-                value={minutes} onChange={e => setMinutes(e.target.value)}
-                style={{
-                  width: '100%', background: '#0B0D10', border: '1px solid #2D3540', borderRadius: 8,
-                  padding: '12px 12px', color: '#F2F5F7', fontSize: 20, fontFamily: "'Oswald',sans-serif",
-                }}
-              />
-            </div>
-          )}
-
-          <button
-            onClick={handleAdd}
-            disabled={!canAdd || adding}
-            style={{
-              width: '100%', background: canAdd ? '#C6F135' : '#23282F', color: canAdd ? '#0B0D10' : '#4A5260',
-              borderRadius: 12, height: 52,
-              fontFamily: "'Oswald',sans-serif", fontWeight: 600, fontSize: 15, letterSpacing: '.06em',
-              opacity: adding ? 0.6 : 1,
-            }}
-          >
-            {adding ? 'ADDING…' : '+ LOG SET'}
-          </button>
-        </div>
+            )}
+            <button onClick={handleSimpleAdd} disabled={!canAddSimple}
+              style={{
+                width: '100%', background: canAddSimple ? '#C6F135' : '#23282F', color: canAddSimple ? '#0B0D10' : '#4A5260',
+                borderRadius: 12, height: 52, fontFamily: "'Oswald',sans-serif", fontWeight: 600, fontSize: 15, letterSpacing: '.06em',
+              }}>
+              + LOG
+            </button>
+            {previousSets.length > 0 && (
+              <div style={{ fontSize: 11, color: '#8A939C' }}>{previousSets.length} logged</div>
+            )}
+          </div>
+        )}
       </div>
     </main>
   );
