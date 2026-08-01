@@ -51,6 +51,9 @@ function localDate(): string {
 
 function kgToLb(kg: number) { return Math.round(kg * 2.20462 * 10) / 10; }
 
+type ProgramDay = { name: string; tag: string; exercises: { slug: string; name: string; sets: number; reps: string }[] };
+type ProgramInfo = { active: boolean; split?: string; cycleDay?: number; day?: ProgramDay; totalDays?: number };
+
 export default function LogPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<'pick-modality' | 'pick-template' | 'logging'>('pick-modality');
@@ -65,6 +68,8 @@ export default function LogPage() {
   const [finishing, setFinishing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [startTime] = useState(Date.now());
+  const [programInfo, setProgramInfo] = useState<ProgramInfo | null>(null);
+  const [mySlugs, setMySlugs] = useState<string[]>([]);
 
   // Restore session from sessionStorage on mount (survives tab navigation)
   useEffect(() => {
@@ -87,6 +92,12 @@ export default function LogPage() {
     } catch {
       sessionStorage.removeItem(SESSION_KEY);
     }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load program + personal library slugs once
+  useEffect(() => {
+    fetch('/api/program').then(r => r.json()).then(d => setProgramInfo(d)).catch(() => {});
+    fetch('/api/my-exercises').then(r => r.json()).then((d: Exercise[]) => setMySlugs(d.map(e => e.slug))).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist session state so navigate-away doesn't lose progress
@@ -342,8 +353,71 @@ export default function LogPage() {
             </div>
           )}
 
-          <div className="font-oswald" style={{ fontSize: 11, letterSpacing: '.18em', color: '#8A939C', marginBottom: 8 }}>
-            ADD EXERCISE
+          {/* TODAY'S PLAN — from active program */}
+          {programInfo?.active && programInfo.day && modality === 'strength' && (() => {
+            const planExercises = programInfo.day.exercises
+              .map(pe => exercises.find(e => e.slug === pe.slug))
+              .filter((e): e is Exercise => !!e);
+            if (planExercises.length === 0) return null;
+            return (
+              <div style={{ marginBottom: 16 }}>
+                <div className="font-oswald" style={{ fontSize: 10, letterSpacing: '.18em', color: '#FF5A3C', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <i className="ph ph-calendar-check" style={{ fontSize: 12 }} />
+                  TODAY&apos;S PLAN · {programInfo.day.name.toUpperCase()}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {planExercises.map(ex => {
+                    const plan = programInfo.day!.exercises.find(pe => pe.slug === ex.slug);
+                    return (
+                      <button
+                        key={ex.id}
+                        onClick={() => handleExerciseSelect(ex)}
+                        style={{ background: '#1A1210', border: '1px solid #FF5A3C30', borderRadius: 10, padding: '11px 14px', textAlign: 'left', color: '#F2F5F7', fontSize: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                      >
+                        <span>{ex.name}</span>
+                        <span style={{ fontSize: 10, color: '#FF5A3C', fontFamily: "'Oswald',sans-serif", letterSpacing: '.06em' }}>
+                          {plan?.sets}×{plan?.reps}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* MY EXERCISES — personal library */}
+          {mySlugs.length > 0 && modality === 'strength' && (() => {
+            const myExercises = mySlugs
+              .map(slug => exercises.find(e => e.slug === slug))
+              .filter((e): e is Exercise => !!e);
+            if (myExercises.length === 0) return null;
+            return (
+              <div style={{ marginBottom: 16 }}>
+                <div className="font-oswald" style={{ fontSize: 10, letterSpacing: '.18em', color: '#C6F135', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <i className="ph ph-star" style={{ fontSize: 12 }} />
+                  MY EXERCISES
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {myExercises.map(ex => (
+                    <button
+                      key={ex.id}
+                      onClick={() => handleExerciseSelect(ex)}
+                      style={{ background: '#141A12', border: '1px solid #C6F13530', borderRadius: 10, padding: '11px 14px', textAlign: 'left', color: '#F2F5F7', fontSize: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                    >
+                      <span>{ex.name}</span>
+                      {Boolean(ex.is_compound) && (
+                        <span style={{ fontSize: 9, color: '#C6F135', fontFamily: "'Oswald',sans-serif", letterSpacing: '.1em' }}>COMPOUND</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          <div className="font-oswald" style={{ fontSize: 10, letterSpacing: '.18em', color: '#8A939C', marginBottom: 8 }}>
+            {mySlugs.length > 0 || programInfo?.active ? 'ALL EXERCISES' : 'ADD EXERCISE'}
           </div>
 
           {filterTabs.length > 0 && (
