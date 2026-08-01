@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 const LINKS = [
   { href: '/', icon: 'ph ph-user', label: 'SELF' },
   { href: '/log', icon: 'ph ph-plus-circle', label: 'LOG' },
-  { href: '/prs', icon: 'ph ph-barbell', label: 'PRs' },
+  { href: '/library', icon: 'ph ph-books', label: 'LIBRARY' },
   { href: '/quests', icon: 'ph ph-target', label: 'QUESTS' },
   { href: '/history', icon: 'ph ph-chart-bar', label: 'HISTORY' },
 ];
