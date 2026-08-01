@@ -371,6 +371,12 @@ export async function finishSession(sessionId: string, localDate: string): Promi
     if (key === 'mobility_sessions' && modality === 'mobility') increment = true;
     if (key === 'pull_sessions' && sets.some(s => s.movement_pattern === 'vertical_pull')) increment = true;
     if (key === 'hinge_sessions' && sets.some(s => s.movement_pattern === 'hinge')) increment = true;
+    if (key === 'push_sessions' && sets.some(s => ['horizontal_push', 'vertical_push'].includes(String(s.movement_pattern ?? '')))) increment = true;
+    if (key === 'squat_sessions' && sets.some(s => s.movement_pattern === 'squat')) increment = true;
+    if (key === 'volume_5k') {
+      const volLb = sets.filter(s => !s.is_warmup).reduce((sum, s) => sum + Number(s.weight_kg ?? 0) * 2.20462 * Number(s.reps ?? 0), 0);
+      if (volLb >= 5000) increment = true;
+    }
 
     if (increment) {
       const newVal = Math.min(Number(row.target_val), Number(row.current_val) + 1);
@@ -418,8 +424,30 @@ export async function finishSession(sessionId: string, localDate: string): Promi
     }
   }
 
-  const newTotalXp = prevTotalXp + xp + questXp;
-  const newLevel = getLevelInfo(newTotalXp);
+  // PR bonus: 50 XP per exercise where this session sets a new weight record
+  if (modality === 'strength') {
+    const prResult = await client.execute({
+      sql: `SELECT COUNT(DISTINCT ss.exercise_id) as cnt
+            FROM session_set ss
+            WHERE ss.session_id = ? AND ss.is_warmup = 0 AND ss.weight_kg > 0
+            AND ss.weight_kg > COALESCE((
+              SELECT MAX(ss2.weight_kg)
+              FROM session_set ss2 JOIN workout_session ws2 ON ws2.id = ss2.session_id
+              WHERE ss2.exercise_id = ss.exercise_id AND ws2.user_id = ?
+                AND ws2.state = 'finished' AND ss2.is_warmup = 0 AND ws2.id != ?
+            ), 0)`,
+      args: [sessionId, USER_ID, sessionId],
+    });
+    const prCount = Number(prResult.rows[0]?.cnt ?? 0);
+    if (prCount > 0) {
+      const prBonusXp = prCount * 50;
+      await client.execute({
+        sql: `INSERT OR IGNORE INTO xp_ledger (user_id, amount, reason, source_id, local_date) VALUES (?,?,'pr',?,?)`,
+        args: [USER_ID, prBonusXp, `${sessionId}-pr`, localDate],
+      });
+      questXp += prBonusXp;
+    }
+  }
 
   // Update streak
   await client.execute({
@@ -431,6 +459,33 @@ export async function finishSession(sessionId: string, localDate: string): Promi
 
   // Recompute attributes
   const attrDeltas = await recomputeAttributes();
+
+  // Season goal evaluation: check attribute thresholds against freshly computed values
+  const seasonQResult = await client.execute({
+    sql: `SELECT qa.id, qd.params, qa.target_val, qd.xp_reward
+          FROM quest_assignment qa JOIN quest_definition qd ON qd.id=qa.definition_id
+          WHERE qa.user_id=? AND qa.completed=0 AND qd.kind='season_goal'`,
+    args: [USER_ID],
+  });
+  const freshAttrsResult = await client.execute({ sql: 'SELECT attribute, value FROM attribute_state WHERE user_id=?', args: [USER_ID] });
+  const freshAttrs: Record<string, number> = {};
+  for (const r of freshAttrsResult.rows) freshAttrs[String(r.attribute)] = Number(r.value);
+  for (const sgRow of seasonQResult.rows) {
+    const sgParams = JSON.parse(String(sgRow.params));
+    if (!sgParams.attribute || !sgParams.threshold) continue;
+    if ((freshAttrs[sgParams.attribute] ?? 0) >= Number(sgParams.threshold)) {
+      await client.execute({ sql: `UPDATE quest_assignment SET current_val=target_val, completed=1 WHERE id=?`, args: [String(sgRow.id)] });
+      const goalXp = Number(sgRow.xp_reward);
+      await client.execute({
+        sql: `INSERT OR IGNORE INTO xp_ledger (user_id, amount, reason, source_id, local_date) VALUES (?,?,'season_goal',?,?)`,
+        args: [USER_ID, goalXp, String(sgRow.id), localDate],
+      });
+      questXp += goalXp;
+    }
+  }
+
+  const newTotalXp = prevTotalXp + xp + questXp;
+  const newLevel = getLevelInfo(newTotalXp);
 
   // Check badges
   const badges = await checkBadges(sessionId, newStreak.currentLength);
@@ -616,6 +671,66 @@ export async function getQuests() {
   });
 }
 
+// ── World Rankings ─────────────────────────────────────────────────────────────
+// Benchmarks based on published sports science literature (8-week rolling windows):
+// STR: elite powerlifters ~200k kg; END: elite endurance athletes ~4k min/8wk;
+// MOB: competitive gymnasts ~1.5k min/4wk; CON: daily dual-session athletes ~80/8wk
+const WORLD_BENCHMARKS = { str: 200000, end: 4000, mob: 1500, con: 80 } as const;
+
+function getAthleteTier(pct: number): { tier: string; color: string } {
+  if (pct >= 90) return { tier: 'World Class', color: '#C6F135' };
+  if (pct >= 50) return { tier: 'Elite',       color: '#FF5A3C' };
+  if (pct >= 20) return { tier: 'Advanced',    color: '#B57BFF' };
+  if (pct >= 8)  return { tier: 'Intermediate',color: '#3CC5FF' };
+  if (pct >= 2)  return { tier: 'Novice',      color: '#8A939C' };
+  return { tier: 'Beginner', color: '#4A5260' };
+}
+
+export type WorldRankingItem = { raw: number; pct: number; tier: string; color: string };
+export type WorldRankings = { str: WorldRankingItem; end: WorldRankingItem; mob: WorldRankingItem; con: WorldRankingItem };
+
+export async function getWorldRankings(): Promise<WorldRankings> {
+  const client = getClient();
+  const [strRes, endRes, mobRes, conRes] = await Promise.all([
+    client.execute({
+      sql: `SELECT COALESCE(SUM(ss.weight_kg*ss.reps),0) as vol FROM session_set ss
+            JOIN workout_session ws ON ws.id=ss.session_id
+            WHERE ws.user_id=? AND ws.modality='strength' AND ws.state='finished'
+              AND ws.finished_at>=datetime('now','-56 days') AND ss.is_warmup=0`,
+      args: [USER_ID],
+    }),
+    client.execute({
+      sql: `SELECT COALESCE(SUM(duration_s),0)/60.0 as mins FROM workout_session
+            WHERE user_id=? AND modality='endurance' AND state='finished'
+              AND finished_at>=datetime('now','-56 days')`,
+      args: [USER_ID],
+    }),
+    client.execute({
+      sql: `SELECT COALESCE(SUM(duration_s),0)/60.0 as mins FROM workout_session
+            WHERE user_id=? AND modality='mobility' AND state='finished'
+              AND finished_at>=datetime('now','-28 days')`,
+      args: [USER_ID],
+    }),
+    client.execute({
+      sql: `SELECT COUNT(*) as cnt FROM workout_session
+            WHERE user_id=? AND state='finished' AND finished_at>=datetime('now','-56 days')`,
+      args: [USER_ID],
+    }),
+  ]);
+
+  const build = (raw: number, key: keyof typeof WORLD_BENCHMARKS): WorldRankingItem => {
+    const pct = Math.min(100, (raw / WORLD_BENCHMARKS[key]) * 100);
+    return { raw, pct, ...getAthleteTier(pct) };
+  };
+
+  return {
+    str: build(Number(strRes.rows[0]?.vol ?? 0), 'str'),
+    end: build(Number(endRes.rows[0]?.mins ?? 0), 'end'),
+    mob: build(Number(mobRes.rows[0]?.mins ?? 0), 'mob'),
+    con: build(Number(conRes.rows[0]?.cnt ?? 0), 'con'),
+  };
+}
+
 function buildQuestName(key: string, params: Record<string, unknown>): string {
   switch (key) {
     case 'strength_sessions': return `${params.count} strength session${Number(params.count) > 1 ? 's' : ''}`;
@@ -623,7 +738,11 @@ function buildQuestName(key: string, params: Record<string, unknown>): string {
     case 'mobility_sessions': return `${params.count} mobility session${Number(params.count) > 1 ? 's' : ''}`;
     case 'pull_sessions': return 'Include a pulling movement';
     case 'hinge_sessions': return 'Include a hinge movement';
+    case 'push_sessions': return 'Include a pushing movement';
+    case 'squat_sessions': return 'Include a squat movement';
+    case 'volume_5k': return 'Log 5,000+ lb in one session';
     case 'strength_50': return 'Reach STR 50';
+    case 'strength_75': return 'Reach STR 75';
     default: return key;
   }
 }

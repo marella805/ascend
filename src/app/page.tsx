@@ -1,6 +1,6 @@
 export const dynamic = 'force-dynamic';
 import { ensureDb } from '@/lib/db/index';
-import { getCharacterSheet, getPRs, getTemplateState } from '@/lib/db/queries';
+import { getCharacterSheet, getPRs, getTemplateState, getWorldRankings } from '@/lib/db/queries';
 import { TEMPLATES } from '@/lib/templates';
 import { RadarChart } from '@/components/ui/RadarChart';
 import { ProgressRing } from '@/components/ui/ProgressRing';
@@ -12,6 +12,7 @@ export default async function CharacterSheetPage() {
   const data = await getCharacterSheet();
   const prs = (await getPRs()).slice(0, 5);
   const templateState = await getTemplateState();
+  const worldRankings = await getWorldRankings();
 
   if (!data) {
     return (
@@ -168,6 +169,31 @@ export default async function CharacterSheetPage() {
             ))}
           </div>
         )}
+
+        {/* Global Ranking */}
+        <div style={{ marginTop: 12, background: '#14181D', border: '1px solid #23282F', borderRadius: 16, padding: '13px 14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span className="font-oswald" style={{ fontSize: 11, letterSpacing: '.18em', color: '#8A939C' }}>GLOBAL RANKING</span>
+            <span style={{ fontSize: 10, color: '#4A5260' }}>vs. world-class athletes</span>
+          </div>
+          {([
+            { label: 'Strength',    data: worldRankings.str },
+            { label: 'Endurance',   data: worldRankings.end },
+            { label: 'Mobility',    data: worldRankings.mob },
+            { label: 'Consistency', data: worldRankings.con },
+          ]).map(({ label, data }) => (
+            <div key={label} style={{ marginBottom: 11 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+                <span style={{ fontSize: 12, color: '#F2F5F7' }}>{label}</span>
+                <span style={{ fontSize: 11, fontFamily: "'Oswald',sans-serif", color: data.color, letterSpacing: '.06em' }}>{data.tier}</span>
+              </div>
+              <div style={{ height: 4, background: '#23282F', borderRadius: 2, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.max(2, data.pct)}%`, background: data.color, borderRadius: 2 }} />
+              </div>
+              <div style={{ fontSize: 9, color: '#4A5260', marginTop: 2 }}>{data.pct.toFixed(1)}% of world class</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <AppNav />

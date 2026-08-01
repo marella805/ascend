@@ -38,6 +38,8 @@ type LastSetHint = {
   trend: Array<{ date: string; weightLb: number }>;
 } | null;
 
+const SESSION_KEY = 'ascend_session';
+
 function ulid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
 }
@@ -63,6 +65,35 @@ export default function LogPage() {
   const [finishing, setFinishing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [startTime] = useState(Date.now());
+
+  // Restore session from sessionStorage on mount (survives tab navigation)
+  useEffect(() => {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return;
+    try {
+      const { sid, mod, tmpl, savedSets } = JSON.parse(raw) as { sid: string; mod: Modality; tmpl: TemplateKey; savedSets: LogSet[] };
+      if (!sid) return;
+      fetch(`/api/exercises?modality=${mod}`)
+        .then(r => r.json())
+        .then((data: Exercise[]) => {
+          setSessionId(sid);
+          setModality(mod);
+          setTemplate(tmpl);
+          setSets(savedSets ?? []);
+          setExercises(data);
+          setPhase('logging');
+        })
+        .catch(() => sessionStorage.removeItem(SESSION_KEY));
+    } catch {
+      sessionStorage.removeItem(SESSION_KEY);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist session state so navigate-away doesn't lose progress
+  useEffect(() => {
+    if (!sessionId || phase !== 'logging') return;
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ sid: sessionId, mod: modality, tmpl: template, savedSets: sets }));
+  }, [sets, sessionId, phase, modality, template]);
 
   useEffect(() => {
     if (phase !== 'logging') return;
@@ -141,6 +172,7 @@ export default function LogPage() {
       body: JSON.stringify({ localDate: localDate() }),
     });
     const envelope = await res.json();
+    sessionStorage.removeItem(SESSION_KEY);
     sessionStorage.setItem(`reward-${sessionId}`, JSON.stringify(envelope));
     router.push(`/reward/${sessionId}`);
   }, [sessionId, finishing, router]);

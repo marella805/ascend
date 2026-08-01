@@ -19,9 +19,9 @@ export function calcNextTarget(weightKg: number, lastReps: number): { weightKg: 
 }
 
 const BASE_XP: Record<string, number> = {
-  strength: 200,
-  endurance: 180,
-  mobility: 120,
+  strength: 350,
+  endurance: 260,
+  mobility: 180,
 };
 
 const REFERENCE_DURATION: Record<string, number> = {
@@ -53,8 +53,8 @@ export function calcXP(opts: {
   const base = BASE_XP[modality] ?? 150;
   const xp = Math.round(base * durationFactor * performance * questMultiplier * streakMultiplier);
 
-  // Daily cap enforced at the API layer; session cap: max 1200 XP
-  return Math.min(1200, xp);
+  // Daily cap enforced at the API layer; session cap: max 1800 XP
+  return Math.min(1800, xp);
 }
 
 // PRD 6.4: Level calculation
